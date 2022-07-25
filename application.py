@@ -20,9 +20,15 @@ slack_event_adapter = SlackEventAdapter(
 client = slack.WebClient(token=os.environ['SLACK_TOKEN'])
 BOT_ID = client.api_call("auth.test")['user_id']
 
+@application.route("/")
+def main():
+    return "Hello World, I'm DriveMate!"
+
 ################################################################################
 # SLASH COMMANDS
-@application.route("/drivemate-sheet", methods=["POST"])
+
+# Create Sheet
+@application.route("/dm-sheet", methods=["POST"])
 def create_sheet():
     data = request.form
     user_id = data.get('user_id')
@@ -42,7 +48,6 @@ def create_sheet():
             else: 
                 email = user['profile']['email']
                 collaboratorsEmails.append(email)
-
     googleSheetId = createGoogleSheet(sheetTitle)
 
     #Create thread to process remaining code 
@@ -66,31 +71,45 @@ def create_sheet():
     client.chat_postMessage(channel=channel_id, blocks=[responseBlock])
     return Response(), 200
 
-################################################################################
-#GOOGLE CLOUD API
-def createGoogleSheet(title):
-    """
-    Creates the Sheet the user has access to.
-    Load pre-authorized application service account user credentials from the environment.
-    """
+# SLASH Document
+@application.route("/dm-doc", methods=["POST"])
+def create_document():
+    data = request.form
+    user_id = data.get('user_id')
+    channel_id = data.get('channel_id')
+    documentTitle = data.get('text') if data.get('text') else "New Document"
+    members = client.conversations_members(channel=channel_id)['members']
+    collaboratorsEmails = []
 
-    creds, _ = google.auth.default()
-    try:
-        service = build('sheets', 'v4', credentials=creds)
-        spreadsheet = {
-            'properties': {
-                'title': title
+    for member in members:
+        user = client.users_info(user=member)['user']
+        if not user['is_bot']:
+            if user['id'] == user_id:
+                creator = {
+                    'userId' : user['id'],
+                    'emailAddress': user['profile']['email']
+                    }
+            else: 
+                email = user['profile']['email']
+                collaboratorsEmails.append(email)
+    googleDocumentId = createGoogleDocument(documentTitle)
+
+    createGoogleDriveFilePermissions(googleDocumentId, [creator['emailAddress']], "user", "writer")
+    createGoogleDriveFilePermissions(googleDocumentId, collaboratorsEmails, "user", "reader")
+    googleDocumentAccessLink = os.environ['GOOGLE_DOCUMENT'] + googleDocumentId
+    responseBlock = {
+        "type": "section", 
+        "text": {
+            "type": "mrkdwn",
+            "text": "{} <@{}> Created A New Document Sheet: <{}|{}>".format(':sparkle:', user_id, googleDocumentAccessLink, documentTitle)
             }
         }
-        spreadsheet = service.spreadsheets().create(body=spreadsheet,
-                                                    fields='spreadsheetId') \
-            .execute()
-        print(f"Spreadsheet ID: {(spreadsheet.get('spreadsheetId'))}")
-        return spreadsheet.get('spreadsheetId')
-    except HttpError as error:
-        print(f"An error occurred: {error}")
-        return error
 
+    client.chat_postMessage(channel=channel_id, blocks=[responseBlock])
+    return Response(), 200
+
+################################################################################
+# GOOGLE DRIVE API
 def createGoogleDriveFilePermissions(file_id, users, perm_type, role):
     """
     Insert a new permission.
@@ -124,7 +143,53 @@ def createGoogleDriveFilePermissions(file_id, users, perm_type, role):
         except errors.HttpError as error:
             print('An error occurred while creating permission: %s' % error)
     return None
-    
+ 
+
+# GOOGLE SHEET API
+def createGoogleSheet(title):
+    """
+    Creates the Sheet the user has access to.
+    Load pre-authorized application service account user credentials from the environment.
+    """
+
+    creds, _ = google.auth.default()
+    try:
+        service = build('sheets', 'v4', credentials=creds)
+        spreadsheet = {
+            'properties': {
+                'title': title
+            }
+        }
+        spreadsheet = service.spreadsheets().create(body=spreadsheet,
+                                                    fields='spreadsheetId') \
+            .execute()
+        print(f"Spreadsheet ID: {(spreadsheet.get('spreadsheetId'))}")
+        return spreadsheet.get('spreadsheetId')
+    except HttpError as error:
+        print(f"An error occurred: {error}")
+        return error
+
+
+#GOOGLE DOC API
+def createGoogleDocument(title):
+    """
+    Creates the Document the user has access to.
+    Load pre-authorized application service account user credentials from the environment.
+    """
+
+    creds, _ = google.auth.default()
+    try: 
+        service = build('docs', 'v1', credentials=creds)
+        document = {
+            'title': title
+        }
+        doc = service.documents().create(body=document).execute()
+        print(f"Document ID: {(doc.get('documentId'))}")
+        return doc.get('documentId')
+    except HttpError as error: 
+        print(f"An error occurred: {error}")
+        return error
+
 ################################################################################
 
 if __name__ == "__main__":
